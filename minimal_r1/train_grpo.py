@@ -162,7 +162,7 @@ def main(args):
     # wandb init
     if accelerator.is_main_process:
         wandb.init(
-            project="minimal-r1",
+            project="xDAN-RLAIF-GRPO-r1",
             config={
                 "learning_rate": args.lr,
                 "epochs": epochs,

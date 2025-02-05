@@ -2,15 +2,15 @@
 # coding: utf-8
 
 """
-vLLM Launch Server
+vLLM 服务器启动脚本
 =================
-This script launches vLLM as a local Python server and
-provides an HTTP endpoint '/generate' through FastAPI (uvicorn).
+此脚本通过FastAPI (uvicorn)启动vLLM作为本地Python服务器，
+并提供'/generate'的HTTP接口。
 
-Usage example:
+使用示例:
     CUDA_VISIBLE_DEVICES=0 python3 minimal_r1/launch_vllm.py --model_name Seungyoun/Qwen2.5-7B-Open-R1-Distill
 
-After server launch, access http://localhost:8000/docs for Swagger UI testing.
+服务器启动后，访问 http://localhost:8000/docs 可以查看Swagger UI测试界面。
 """
 
 import uvicorn
@@ -24,36 +24,37 @@ from typing import List
 # vLLM
 from vllm import LLM, SamplingParams
 
-# ----------- Argument Parsing -----------
-parser = argparse.ArgumentParser(description="Launch vLLM Server with a specified model.")
-parser.add_argument("--model_name", type=str, required=True, help="Path or name of the model to use")
+# ----------- 参数解析 -----------
+parser = argparse.ArgumentParser(description="使用指定模型启动vLLM服务器")
+parser.add_argument("--model_name", type=str, required=True, help="要使用的模型路径或名称")
+parser.add_argument("--tensor_parallel_size", type=int, default=2, help="用于张量并行的GPU数量")
 args = parser.parse_args()
 
 
-# ----------- FastAPI init -----------
+# ----------- FastAPI初始化 -----------
 app = FastAPI(title="vLLM Server", version="0.1")
 
 
-# ----------- vLLM init -----------
+# ----------- vLLM初始化 -----------
 llm = LLM(
     model=args.model_name,
     trust_remote_code=True,
-    tensor_parallel_size=2,  # add this if you want to use multiple GPUs
+    tensor_parallel_size=args.tensor_parallel_size,  # 使用命令行参数
     dtype="bfloat16"
 )
-# 기본 샘플링 파라미터
+# 默认采样参数
 default_params = SamplingParams(
-    temperature=0.8,
+    temperature=0.65,
     top_p=0.95,
-    max_tokens=128,
+    max_tokens=1024,
 )
 
 
 class GenerateRequest(BaseModel):
     prompts: List[str]
     num_gen: int = 1
-    temperature: float = 0.8
-    max_tokens: int = 128
+    temperature: float = 0.65
+    max_tokens: int = 1024
 
 
 class GenerateResponse(BaseModel):
@@ -62,23 +63,23 @@ class GenerateResponse(BaseModel):
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest):
-    """vLLM으로 num_gen개씩 샘플 생성"""
+    """使用vLLM为每个prompt生成num_gen个样本"""
     sampling_params = SamplingParams(
         temperature=req.temperature,
         top_p=0.95,
         max_tokens=req.max_tokens,
     )
 
-    num_prompts = len(req.prompts)  # Original number of prompts
-    outputs = llm.generate(req.prompts * req.num_gen, sampling_params)  # Ensured multiplication
+    num_prompts = len(req.prompts)  # 原始prompt数量
+    outputs = llm.generate(req.prompts * req.num_gen, sampling_params)  # 确保乘法正确
 
-    # Initialize the correct number of lists
+    # 初始化正确数量的列表
     generations = [[] for _ in range(num_prompts)]
 
-    # Correctly distribute outputs back into the corresponding prompt group
+    # 将输出正确分配回对应的prompt组
     for i, output in enumerate(outputs):
-        prompt_idx = i % num_prompts  # Ensures proper grouping
-        generations[prompt_idx].append(output.outputs[0].text)  # Append to corresponding list
+        prompt_idx = i % num_prompts  # 确保正确分组
+        generations[prompt_idx].append(output.outputs[0].text)  # 添加到对应列表
 
     return GenerateResponse(generations=generations)
 
@@ -87,13 +88,13 @@ def generate(req: GenerateRequest):
 @app.post("/load_weights")
 async def load_weights(request: Request):
     """
-    Load PyTorch state_dict to vLLM model.
-    Client can send state_dict in the following way:
+    将PyTorch的state_dict加载到vLLM模型中。
+    客户端可以通过以下方式发送state_dict：
 
     ```python
     import requests, torch, io
 
-    # state_dict (예: fine-tuned weights)
+    # state_dict (例如：微调后的权重)
     model_sd = torch.load("fine_tuned.pt")
 
     buf = io.BytesIO()
@@ -105,7 +106,7 @@ async def load_weights(request: Request):
     ```
     """
     if llm is None:
-        raise HTTPException(status_code=400, detail="LLM is not initialized.")
+        raise HTTPException(status_code=400, detail="LLM未初始化.")
 
     try:
         weights_data = await request.body()
@@ -115,14 +116,14 @@ async def load_weights(request: Request):
 
         llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights(state_dict.items())
-        print("\3[32mNew model weights loaded.\3[0m")
+        print("\3[32m新模型权重已加载.\3[0m")
 
-        return {"status": "success", "message": "Model weights loaded."}
+        return {"status": "success", "message": "模型权重已加载."}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load weights: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"加载权重失败：{str(e)}")
 
 
 if __name__ == "__main__":
-    print("Launching vLLM API server on :8000 ...")
+    print("正在启动vLLM API服务器，监听端口:8000 ...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

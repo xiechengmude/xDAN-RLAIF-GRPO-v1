@@ -6,9 +6,11 @@ ref_model_api.py
 =================
 - Runs `ref_model` as an API server to provide inference.
 - Calculates `log probability` through the `POST /logprob` endpoint.
+- Supports model parallelism to load large models.
 
 Example usage:
-    CUDA_VISIBLE_DEVICES=1 python3 minimal_r1/launch_ref_model.py --model_name Seungyoun/Qwen2.5-7B-Open-R1-Distill
+    # Load model on 4 GPUs
+    CUDA_VISIBLE_DEVICES=0,1,2,3 python3 minimal_r1/launch_ref_model.py --model_name Seungyoun/Qwen2.5-7B-Open-R1-Distill --device_map "auto"
 """
 
 import torch
@@ -18,13 +20,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import uvicorn
+from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 
 # 설정
 parser = argparse.ArgumentParser(description="Launch ref_model as an API server.")
 parser.add_argument("--model_name", type=str, default="Seungyoun/Qwen2.5-7B-Open-R1-Distill", help="Model name")
+parser.add_argument("--device_map", type=str, default="auto", help="Device mapping strategy, can be 'auto' or a specific device mapping dictionary")
 args = parser.parse_args()
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # 모델 및 토크나이저 로드
 print("Loading ref_model...")
@@ -36,7 +38,8 @@ ref_model = AutoModelForCausalLM.from_pretrained(
     args.model_name,
     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     trust_remote_code=True,
-).to(DEVICE)
+    device_map="auto"  # 自动分配到所有可用的GPU
+)
 ref_model.eval()
 print("ref_model loaded successfully!")
 
@@ -56,11 +59,11 @@ async def compute_logprob(request: LogProbRequest):
         # 토큰화
         prompt_input_ids = tokenizer.batch_encode_plus(
             prompts, return_tensors="pt", padding=True, padding_side="left"
-        ).to(DEVICE)
+        ).to(ref_model.device)
         
         gen_input_ids = tokenizer.batch_encode_plus(
             generations, return_tensors="pt", padding=True, padding_side="right"
-        ).to(DEVICE)
+        ).to(ref_model.device)
 
         prompt_len = prompt_input_ids.input_ids.shape[1]
         input_ids = torch.cat([prompt_input_ids.input_ids, gen_input_ids.input_ids], dim=1).long()
@@ -87,5 +90,5 @@ async def compute_logprob(request: LogProbRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    print("Starting API server, listening on port 8001...")
     uvicorn.run(app, host="0.0.0.0", port=8001)
-
